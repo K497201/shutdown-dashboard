@@ -85,10 +85,6 @@ def load_data(file):
         # Drop by column index
         df.drop(df.columns[existing_indices], axis=1, inplace=True)
         
-        # Note: By loading it into a Pandas DataFrame 'df', 
-        # it is now effectively converted and ready for processing 
-        # just like the Excel data below.
-        
     else:
         # Excel logic
         df = pd.read_excel(file, engine="openpyxl")
@@ -96,9 +92,9 @@ def load_data(file):
     df.columns = df.columns.str.strip()
 
     # 2. Process Dates and Numerics
-    # Ensure column names match your CSV headers if they differ from Excel
-    df["Shutdown Date/Time"] = pd.to_datetime(df["Shutdown Date/Time"], errors="coerce")
-    df["Start Up Date/Time"] = pd.to_datetime(df["Start Up Date/Time"], errors="coerce")
+    # FIX: Added dayfirst=True to handle DD/MM/YYYY formats correctly
+    df["Shutdown Date/Time"] = pd.to_datetime(df["Shutdown Date/Time"], dayfirst=True, errors="coerce")
+    df["Start Up Date/Time"] = pd.to_datetime(df["Start Up Date/Time"], dayfirst=True, errors="coerce")
     df["Downtime (Hrs)"] = pd.to_numeric(df["Downtime (Hrs)"], errors="coerce")
 
     # 3. Fill blanks (CRITICAL)
