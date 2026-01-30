@@ -65,20 +65,43 @@ def load_data(file):
     
     # 1. Read the file based on extension
     if filename.endswith('.csv'):
-        df = pd.read_csv(file)
+        # Try reading with utf-8, fall back if needed
+        try:
+            df = pd.read_csv(file)
+        except UnicodeDecodeError:
+            df = pd.read_csv(file, encoding='latin1')
         
-        # --- CSV DATA RECOVERY ---
+        # --- 1. DATA RECOVERY (Dates) ---
         # Before dropping Column C ("Created"), use it to fill missing "Shutdown Date/Time"
-        # This handles row 1604 which has a missing shutdown date.
+        # This handles rows with missing shutdown dates.
         if "Created" in df.columns and "Shutdown Date/Time" in df.columns:
             df["Shutdown Date/Time"] = df["Shutdown Date/Time"].fillna(df["Created"])
 
-        # --- CSV SPECIFIC CLEANING AS REQUESTED ---
-        # Map Excel Column Letters to 0-based Indices:
-        # A=0, B=1, C=2, D=3, E=4 ... I=8 ... AB=27
+        # --- 2. DATA RECOVERY (Reasons) ---
+        # Use Column I ("Remarks / Shutdown Reason") to fill "ShutdownReason" if it is "Other"
+        # Ensure column names are stripped of whitespace first just in case
+        df.columns = df.columns.str.strip()
         
-        # Create list of indices to drop (C, E, I through AB)
-        indices_to_drop = [2, 4] + list(range(8, 28))
+        if "ShutdownReason" in df.columns and "Remarks / Shutdown Reason" in df.columns:
+            # Normalize to lower case for comparison, but keep original data
+            condition = (df["ShutdownReason"].astype(str).str.lower().str.strip() == "other") & \
+                        (df["Remarks / Shutdown Reason"].notna()) & \
+                        (df["Remarks / Shutdown Reason"].astype(str).str.strip() != "")
+            
+            # Update ShutdownReason with Remark where condition is met
+            df.loc[condition, "ShutdownReason"] = df.loc[condition, "Remarks / Shutdown Reason"]
+
+        # --- 3. CSV SPECIFIC CLEANING ---
+        # Map Excel Column Letters to 0-based Indices:
+        # A=0, B=1, C=2, D=3, E=4, F=5, G=6, H=7, I=8, J=9 ... AB=27
+        
+        # Logic: 
+        # - Remove C (Index 2)
+        # - Remove E (Index 4)
+        # - Keep I (Index 8) -> CHANGED based on request
+        # - Remove J to AB (Index 9 to 27)
+        
+        indices_to_drop = [2, 4] + list(range(9, 28))
         
         # Filter indices to ensure we don't try to drop columns that don't exist
         existing_indices = [i for i in indices_to_drop if i < len(df.columns)]
@@ -89,11 +112,18 @@ def load_data(file):
     else:
         # Excel logic
         df = pd.read_excel(file, engine="openpyxl")
+        df.columns = df.columns.str.strip()
+        
+        # Apply the same logic for Excel if columns exist
+        if "ShutdownReason" in df.columns and "Remarks / Shutdown Reason" in df.columns:
+            condition = (df["ShutdownReason"].astype(str).str.lower().str.strip() == "other") & \
+                        (df["Remarks / Shutdown Reason"].notna())
+            df.loc[condition, "ShutdownReason"] = df.loc[condition, "Remarks / Shutdown Reason"]
 
     df.columns = df.columns.str.strip()
 
     # 2. Process Dates and Numerics
-    # FIX: Added dayfirst=True to handle DD/MM/YYYY formats correctly
+    # Added dayfirst=True to handle DD/MM/YYYY formats correctly
     df["Shutdown Date/Time"] = pd.to_datetime(df["Shutdown Date/Time"], dayfirst=True, errors="coerce")
     df["Start Up Date/Time"] = pd.to_datetime(df["Start Up Date/Time"], dayfirst=True, errors="coerce")
     df["Downtime (Hrs)"] = pd.to_numeric(df["Downtime (Hrs)"], errors="coerce")
@@ -108,9 +138,11 @@ def load_data(file):
     df["Site"] = df["Site"].fillna("Unknown Site")
     df["Well"] = df["Well"].fillna("Unknown Well")
     
-    # Check if columns exist before filling (CSV might have slightly different names)
     if "ShutdownReason" in df.columns:
         df["ShutdownReason"] = df["ShutdownReason"].fillna("Unknown / Not Reported")
+    else:
+        df["ShutdownReason"] = "Unknown" # Fallback if column missing
+
     if "Alert" in df.columns:
         df["Alert"] = df["Alert"].fillna("No Alert")
 
@@ -163,7 +195,9 @@ with st.container():
     # Check if column exists (CSV safety)
     reason_options = ["All Reasons"]
     if "ShutdownReason" in df.columns:
-        reason_options += sorted(df["ShutdownReason"].unique())
+        # Get unique reasons after the "Other" replacement update
+        unique_reasons = sorted([str(x) for x in df["ShutdownReason"].unique()])
+        reason_options += unique_reasons
         
     reason_f = f3.selectbox(
         "Shutdown Reason",
@@ -172,7 +206,7 @@ with st.container():
 
     alert_options = ["All Alerts"]
     if "Alert" in df.columns:
-        alert_options += sorted(df["Alert"].unique())
+        alert_options += sorted([str(x) for x in df["Alert"].unique()])
 
     alert_f = f4.selectbox(
         "Alert",
@@ -206,10 +240,10 @@ if well_f != "All Wells":
     filtered_df = filtered_df[filtered_df["Well"] == well_f]
 
 if reason_f != "All Reasons" and "ShutdownReason" in filtered_df.columns:
-    filtered_df = filtered_df[filtered_df["ShutdownReason"] == reason_f]
+    filtered_df = filtered_df[filtered_df["ShutdownReason"].astype(str) == reason_f]
 
 if alert_f != "All Alerts" and "Alert" in filtered_df.columns:
-    filtered_df = filtered_df[filtered_df["Alert"] == alert_f]
+    filtered_df = filtered_df[filtered_df["Alert"].astype(str) == alert_f]
 
 # Ensure date_f has two values (Start and End) before filtering
 if len(date_f) == 2:
@@ -264,11 +298,24 @@ with c1:
 with c2:
     st.subheader("⚡ Shutdown Reason Distribution")
     if not filtered_df.empty and "ShutdownReason" in filtered_df.columns:
+        # Limit pie chart to top 10 reasons to avoid clutter if 'Others' expansion created many categories
+        reason_counts = filtered_df["ShutdownReason"].value_counts().reset_index()
+        reason_counts.columns = ["ShutdownReason", "Count"]
+        
+        if len(reason_counts) > 15:
+            # Group smaller categories into "Misc" for the chart if too many unique remarks
+            top_15 = reason_counts.head(15)
+            other_count = reason_counts.iloc[15:]["Count"].sum()
+            if other_count > 0:
+                new_row = pd.DataFrame({"ShutdownReason": ["Misc / Low Freq Reasons"], "Count": [other_count]})
+                reason_counts = pd.concat([top_15, new_row])
+        
         st.plotly_chart(
             px.pie(
-                filtered_df,
+                reason_counts,
                 names="ShutdownReason",
-                hole=0.45
+                values="Count",
+                hole=0.4
             ),
             use_container_width=True
         )
@@ -288,8 +335,14 @@ if not monthly.empty:
 # =================================================
 st.subheader("📋 Shutdown Event Log")
 
+# Display specific columns if they exist to keep table clean
+cols_to_show = [c for c in ["Shutdown Date/Time", "Well", "Downtime (Hrs)", "ShutdownReason", "Remarks / Shutdown Reason", "Alert"] if c in filtered_df.columns]
+# If Remarks column doesn't exist in filtered (e.g. excel upload without it), fallback to all
+if not cols_to_show:
+    cols_to_show = filtered_df.columns
+
 st.dataframe(
-    filtered_df.sort_values("Shutdown Date/Time", ascending=False),
+    filtered_df[cols_to_show].sort_values("Shutdown Date/Time", ascending=False),
     use_container_width=True,
     height=350
 )
