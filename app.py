@@ -61,11 +61,42 @@ st.caption("Operational downtime intelligence & reliability monitoring")
 # =================================================
 @st.cache_data
 def load_data(file):
-    # 1. Read the file
-    df = pd.read_excel(file, engine="openpyxl")
+    filename = file.name.lower()
+    
+    # 1. Read the file based on extension
+    if filename.endswith('.csv'):
+        df = pd.read_csv(file)
+        
+        # --- CSV SPECIFIC CLEANING AS REQUESTED ---
+        # Map Excel Column Letters to 0-based Indices:
+        # A=0, B=1, C=2, D=3, E=4 ... I=8 ... AB=27
+        
+        # Columns to drop: 
+        # C (index 2)
+        # E (index 4)
+        # I to AB (index 8 to 27 inclusive)
+        
+        # Create list of indices to drop
+        indices_to_drop = [2, 4] + list(range(8, 28))
+        
+        # Filter indices to ensure we don't try to drop columns that don't exist
+        existing_indices = [i for i in indices_to_drop if i < len(df.columns)]
+        
+        # Drop by column index
+        df.drop(df.columns[existing_indices], axis=1, inplace=True)
+        
+        # Note: By loading it into a Pandas DataFrame 'df', 
+        # it is now effectively converted and ready for processing 
+        # just like the Excel data below.
+        
+    else:
+        # Excel logic
+        df = pd.read_excel(file, engine="openpyxl")
+
     df.columns = df.columns.str.strip()
 
     # 2. Process Dates and Numerics
+    # Ensure column names match your CSV headers if they differ from Excel
     df["Shutdown Date/Time"] = pd.to_datetime(df["Shutdown Date/Time"], errors="coerce")
     df["Start Up Date/Time"] = pd.to_datetime(df["Start Up Date/Time"], errors="coerce")
     df["Downtime (Hrs)"] = pd.to_numeric(df["Downtime (Hrs)"], errors="coerce")
@@ -73,8 +104,12 @@ def load_data(file):
     # 3. Fill blanks (CRITICAL)
     df["Site"] = df["Site"].fillna("Unknown Site")
     df["Well"] = df["Well"].fillna("Unknown Well")
-    df["ShutdownReason"] = df["ShutdownReason"].fillna("Unknown / Not Reported")
-    df["Alert"] = df["Alert"].fillna("No Alert")
+    
+    # Check if columns exist before filling (CSV might have slightly different names)
+    if "ShutdownReason" in df.columns:
+        df["ShutdownReason"] = df["ShutdownReason"].fillna("Unknown / Not Reported")
+    if "Alert" in df.columns:
+        df["Alert"] = df["Alert"].fillna("No Alert")
 
     # 4. Create Categorical Buckets
     df["Downtime Bucket"] = pd.cut(
@@ -92,14 +127,14 @@ def load_data(file):
 # FILE UPLOAD & EXECUTION
 # =================================================
 uploaded_file = st.file_uploader(
-    "Upload Shutdown Excel File",
-    type=["xlsx"]
+    "Upload Shutdown File (Excel or CSV)",
+    type=["xlsx", "csv"]
 )
 
 if uploaded_file is not None:
     df = load_data(uploaded_file)
 else:
-    st.warning("Please upload an Excel file to continue.")
+    st.warning("Please upload an Excel or CSV file to continue.")
     st.stop()
 
 # =================================================
@@ -122,14 +157,23 @@ with st.container():
         ["All Wells"] + sorted(df["Well"].unique())
     )
 
+    # Check if column exists (CSV safety)
+    reason_options = ["All Reasons"]
+    if "ShutdownReason" in df.columns:
+        reason_options += sorted(df["ShutdownReason"].unique())
+        
     reason_f = f3.selectbox(
         "Shutdown Reason",
-        ["All Reasons"] + sorted(df["ShutdownReason"].unique())
+        reason_options
     )
+
+    alert_options = ["All Alerts"]
+    if "Alert" in df.columns:
+        alert_options += sorted(df["Alert"].unique())
 
     alert_f = f4.selectbox(
         "Alert",
-        ["All Alerts"] + sorted(df["Alert"].unique())
+        alert_options
     )
 
     # Handle cases where data might be empty after upload or have NaT dates
@@ -137,7 +181,7 @@ with st.container():
     max_date = df["Shutdown Date/Time"].max()
     
     if pd.isna(min_date) or pd.isna(max_date):
-         st.error("Date column contains no valid dates.")
+         st.error("Date column contains no valid dates or file is empty.")
          st.stop()
 
     date_f = f5.date_input(
@@ -158,10 +202,10 @@ if site_f != "All Sites":
 if well_f != "All Wells":
     filtered_df = filtered_df[filtered_df["Well"] == well_f]
 
-if reason_f != "All Reasons":
+if reason_f != "All Reasons" and "ShutdownReason" in filtered_df.columns:
     filtered_df = filtered_df[filtered_df["ShutdownReason"] == reason_f]
 
-if alert_f != "All Alerts":
+if alert_f != "All Alerts" and "Alert" in filtered_df.columns:
     filtered_df = filtered_df[filtered_df["Alert"] == alert_f]
 
 # Ensure date_f has two values (Start and End) before filtering
@@ -216,7 +260,7 @@ with c1:
 
 with c2:
     st.subheader("⚡ Shutdown Reason Distribution")
-    if not filtered_df.empty:
+    if not filtered_df.empty and "ShutdownReason" in filtered_df.columns:
         st.plotly_chart(
             px.pie(
                 filtered_df,
@@ -225,6 +269,8 @@ with c2:
             ),
             use_container_width=True
         )
+    else:
+        st.info("Shutdown Reason column missing or empty")
 
 st.subheader("📈 Monthly Shutdown Trend")
 monthly = filtered_df.groupby("Shutdown Month").size().reset_index(name="Shutdown Count")
@@ -246,10 +292,11 @@ st.dataframe(
 )
 
 buffer = BytesIO()
+# Export as Excel regardless of input type
 filtered_df.to_excel(buffer, index=False)
 
 st.download_button(
-    "⬇ Download Filtered Data",
+    "⬇ Download Filtered Data (XLSX)",
     buffer.getvalue(),
     "Shutdown_Filtered.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -288,11 +335,16 @@ if st.button("🧾 Generate PDF Report"):
         .size().reset_index(name="Shutdown Count")
     )
 
-    reason = (
-        well_df.groupby("ShutdownReason")
-        .agg(Total_Downtime=("Downtime (Hrs)", "sum"))
-        .reset_index()
-    )
+    # Check for Reason column availability
+    if "ShutdownReason" in well_df.columns:
+        reason = (
+            well_df.groupby("ShutdownReason")
+            .agg(Total_Downtime=("Downtime (Hrs)", "sum"))
+            .reset_index()
+        )
+    else:
+        # Fallback if column missing
+        reason = pd.DataFrame(columns=["ShutdownReason", "Total_Downtime"])
 
     fig_monthly = px.line(
         monthly,
@@ -304,11 +356,11 @@ if st.button("🧾 Generate PDF Report"):
 
     fig_reason = px.pie(
         reason,
-        names="ShutdownReason",
-        values="Total_Downtime",
+        names="ShutdownReason" if not reason.empty else None,
+        values="Total_Downtime" if not reason.empty else None,
         hole=0.4,
         title="Downtime by Shutdown Reason",
-        color="ShutdownReason",
+        color="ShutdownReason" if not reason.empty else None,
         color_discrete_sequence=px.colors.qualitative.Plotly
     )
 
@@ -395,15 +447,16 @@ if st.button("🧾 Generate PDF Report"):
     elements.append(Paragraph("Recent Shutdown Events (Latest 20)", styles["Heading2"]))
     elements.append(Spacer(1, 10))
 
+    # Columns to include in report (check availability)
+    cols_to_report = ["Shutdown Date/Time", "Start Up Date/Time", "Downtime (Hrs)"]
+    if "ShutdownReason" in well_df.columns:
+        cols_to_report.append("ShutdownReason")
+    if "Alert" in well_df.columns:
+        cols_to_report.append("Alert")
+
     table_df = well_df.sort_values(
         "Shutdown Date/Time", ascending=False
-    ).head(20)[[
-        "Shutdown Date/Time",
-        "Start Up Date/Time",
-        "Downtime (Hrs)",
-        "ShutdownReason",
-        "Alert"
-    ]]
+    ).head(20)[cols_to_report]
     
     # Convert timestamps to string to avoid ReportLab issues
     table_df["Shutdown Date/Time"] = table_df["Shutdown Date/Time"].astype(str)
