@@ -61,16 +61,17 @@ uploaded_file = st.file_uploader(
 )
 
 @st.cache_data
-def load_data(uploaded_file):
-    df = pd.read_excel(uploaded_file, engine="openpyxl")
+def load_data(file):
+    df = pd.read_excel(file, engine="openpyxl")
     df.columns = df.columns.str.strip()
     return df
 
 if uploaded_file is not None:
     df = load_data(uploaded_file)
 else:
-    st.info("Please upload an Excel file to continue")
+    st.warning("Please upload an Excel file to continue.")
     st.stop()
+
 
 
     df["Shutdown Date/Time"] = pd.to_datetime(df["Shutdown Date/Time"], errors="coerce")
