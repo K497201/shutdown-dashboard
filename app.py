@@ -67,16 +67,17 @@ def load_data(file):
     if filename.endswith('.csv'):
         df = pd.read_csv(file)
         
+        # --- CSV DATA RECOVERY ---
+        # Before dropping Column C ("Created"), use it to fill missing "Shutdown Date/Time"
+        # This handles row 1604 which has a missing shutdown date.
+        if "Created" in df.columns and "Shutdown Date/Time" in df.columns:
+            df["Shutdown Date/Time"] = df["Shutdown Date/Time"].fillna(df["Created"])
+
         # --- CSV SPECIFIC CLEANING AS REQUESTED ---
         # Map Excel Column Letters to 0-based Indices:
         # A=0, B=1, C=2, D=3, E=4 ... I=8 ... AB=27
         
-        # Columns to drop: 
-        # C (index 2)
-        # E (index 4)
-        # I to AB (index 8 to 27 inclusive)
-        
-        # Create list of indices to drop
+        # Create list of indices to drop (C, E, I through AB)
         indices_to_drop = [2, 4] + list(range(8, 28))
         
         # Filter indices to ensure we don't try to drop columns that don't exist
@@ -98,6 +99,12 @@ def load_data(file):
     df["Downtime (Hrs)"] = pd.to_numeric(df["Downtime (Hrs)"], errors="coerce")
 
     # 3. Fill blanks (CRITICAL)
+    # If Shutdown Date is STILL NaT (after trying fillna above), fill with the min date
+    # so it doesn't get filtered out by the date picker.
+    if df["Shutdown Date/Time"].notna().any():
+        min_valid_date = df["Shutdown Date/Time"].min()
+        df["Shutdown Date/Time"] = df["Shutdown Date/Time"].fillna(min_valid_date)
+    
     df["Site"] = df["Site"].fillna("Unknown Site")
     df["Well"] = df["Well"].fillna("Unknown Well")
     
