@@ -13,7 +13,6 @@ import plotly.io as pio
 import tempfile
 import os
 
-
 # =================================================
 # PAGE CONFIG
 # =================================================
@@ -53,52 +52,50 @@ st.markdown("## ⛽ Well Shutdown & Trip Dashboard")
 st.caption("Operational downtime intelligence & reliability monitoring")
 
 # =================================================
-# FILE UPLOAD (TOP, NOT SIDEBAR)
+# DATA LOADING FUNCTION
 # =================================================
-uploaded_file = st.file_uploader(
-    "Upload Shutdown Excel File",
-    type=["xlsx"]
-)
-
 @st.cache_data
 def load_data(file):
+    # 1. Read the file
     df = pd.read_excel(file, engine="openpyxl")
     df.columns = df.columns.str.strip()
-    return df
 
-if uploaded_file is not None:
-    df = load_data(uploaded_file)
-else:
-    st.warning("Please upload an Excel file to continue.")
-    st.stop()
-
-
-
+    # 2. Process Dates and Numerics
     df["Shutdown Date/Time"] = pd.to_datetime(df["Shutdown Date/Time"], errors="coerce")
     df["Start Up Date/Time"] = pd.to_datetime(df["Start Up Date/Time"], errors="coerce")
     df["Downtime (Hrs)"] = pd.to_numeric(df["Downtime (Hrs)"], errors="coerce")
 
-    # Fill blanks (CRITICAL)
+    # 3. Fill blanks (CRITICAL)
     df["Site"] = df["Site"].fillna("Unknown Site")
     df["Well"] = df["Well"].fillna("Unknown Well")
     df["ShutdownReason"] = df["ShutdownReason"].fillna("Unknown / Not Reported")
     df["Alert"] = df["Alert"].fillna("No Alert")
 
+    # 4. Create Categorical Buckets
     df["Downtime Bucket"] = pd.cut(
         df["Downtime (Hrs)"],
         [-1, 1, 5, 24, 1e6],
         labels=["0–1 hr", "1–5 hrs", "5–24 hrs", ">24 hrs"]
     )
 
+    # 5. Extract Month
     df["Shutdown Month"] = df["Shutdown Date/Time"].dt.to_period("M").astype(str)
 
     return df
 
-if uploaded_file is None:
-    st.warning("⬆ Upload the Excel file to start")
-    st.stop()
+# =================================================
+# FILE UPLOAD & EXECUTION
+# =================================================
+uploaded_file = st.file_uploader(
+    "Upload Shutdown Excel File",
+    type=["xlsx"]
+)
 
-df = load_data(uploaded_file)
+if uploaded_file is not None:
+    df = load_data(uploaded_file)
+else:
+    st.warning("Please upload an Excel file to continue.")
+    st.stop()
 
 # =================================================
 # FILTER BAR (PRO STYLE)
@@ -130,10 +127,17 @@ with st.container():
         ["All Alerts"] + sorted(df["Alert"].unique())
     )
 
+    # Handle cases where data might be empty after upload or have NaT dates
+    min_date = df["Shutdown Date/Time"].min()
+    max_date = df["Shutdown Date/Time"].max()
+    
+    if pd.isna(min_date) or pd.isna(max_date):
+         st.error("Date column contains no valid dates.")
+         st.stop()
+
     date_f = f5.date_input(
         "Shutdown Date Range",
-        [df["Shutdown Date/Time"].min().date(),
-         df["Shutdown Date/Time"].max().date()]
+        [min_date.date(), max_date.date()]
     )
 
     st.markdown('</div>', unsafe_allow_html=True)
@@ -155,10 +159,12 @@ if reason_f != "All Reasons":
 if alert_f != "All Alerts":
     filtered_df = filtered_df[filtered_df["Alert"] == alert_f]
 
-filtered_df = filtered_df[
-    (filtered_df["Shutdown Date/Time"].dt.date >= date_f[0]) &
-    (filtered_df["Shutdown Date/Time"].dt.date <= date_f[1])
-]
+# Ensure date_f has two values (Start and End) before filtering
+if len(date_f) == 2:
+    filtered_df = filtered_df[
+        (filtered_df["Shutdown Date/Time"].dt.date >= date_f[0]) &
+        (filtered_df["Shutdown Date/Time"].dt.date <= date_f[1])
+    ]
 
 st.caption(
     f"📄 Total Records: {len(df)} | Displayed: {len(filtered_df)}"
@@ -188,35 +194,40 @@ with c1:
         filtered_df.groupby("Well")["Downtime (Hrs)"]
         .sum().sort_values(ascending=False).head(10).reset_index()
     )
-    st.plotly_chart(
-        px.bar(
-            top_wells,
-            x="Downtime (Hrs)",
-            y="Well",
-            orientation="h",
-            color="Downtime (Hrs)",
-            color_continuous_scale="Reds"
-        ),
-        use_container_width=True
-    )
+    if not top_wells.empty:
+        st.plotly_chart(
+            px.bar(
+                top_wells,
+                x="Downtime (Hrs)",
+                y="Well",
+                orientation="h",
+                color="Downtime (Hrs)",
+                color_continuous_scale="Reds"
+            ),
+            use_container_width=True
+        )
+    else:
+        st.info("No data for charts")
 
 with c2:
     st.subheader("⚡ Shutdown Reason Distribution")
-    st.plotly_chart(
-        px.pie(
-            filtered_df,
-            names="ShutdownReason",
-            hole=0.45
-        ),
-        use_container_width=True
-    )
+    if not filtered_df.empty:
+        st.plotly_chart(
+            px.pie(
+                filtered_df,
+                names="ShutdownReason",
+                hole=0.45
+            ),
+            use_container_width=True
+        )
 
 st.subheader("📈 Monthly Shutdown Trend")
 monthly = filtered_df.groupby("Shutdown Month").size().reset_index(name="Shutdown Count")
-st.plotly_chart(
-    px.line(monthly, x="Shutdown Month", y="Shutdown Count", markers=True),
-    use_container_width=True
-)
+if not monthly.empty:
+    st.plotly_chart(
+        px.line(monthly, x="Shutdown Month", y="Shutdown Count", markers=True),
+        use_container_width=True
+    )
 
 # =================================================
 # TABLE + EXPORT
@@ -287,21 +298,14 @@ if st.button("🧾 Generate PDF Report"):
     )
 
     fig_reason = px.pie(
-    reason,
-    names="ShutdownReason",
-    values="Total_Downtime",
-    hole=0.4,
-    title="Downtime by Shutdown Reason",
-    color="ShutdownReason",
-    color_discrete_sequence=[
-        "#1F77B4",  # blue
-        "#FF7F0E",  # orange
-        "#2CA02C",  # green
-        "#D62728",  # red
-        "#9467BD",  # purple
-        "#8C564B"   # brown
-    ]
-)
+        reason,
+        names="ShutdownReason",
+        values="Total_Downtime",
+        hole=0.4,
+        title="Downtime by Shutdown Reason",
+        color="ShutdownReason",
+        color_discrete_sequence=px.colors.qualitative.Plotly
+    )
 
     # -----------------------------
     # Save charts as images
@@ -310,8 +314,12 @@ if st.button("🧾 Generate PDF Report"):
     trend_img = os.path.join(tmp_dir, "trend.png")
     reason_img = os.path.join(tmp_dir, "reason.png")
 
-    pio.write_image(fig_monthly, trend_img, width=800, height=400)
-    pio.write_image(fig_reason, reason_img, width=600, height=400)
+    try:
+        pio.write_image(fig_monthly, trend_img, width=800, height=400)
+        pio.write_image(fig_reason, reason_img, width=600, height=400)
+    except ValueError:
+        st.error("Kaleido package is required for PDF image generation. Please install it or check your environment.")
+        st.stop()
 
     # -----------------------------
     # Build PDF
@@ -360,21 +368,21 @@ if st.button("🧾 Generate PDF Report"):
 
     # ===== CHARTS =====
     elements.append(
-    KeepTogether([
-        Paragraph("Monthly Shutdown Trend", styles["Heading2"]),
-        Spacer(1, 10),
-        Image(trend_img, width=6.8 * inch, height=3 * inch)
-    ])
-)
+        KeepTogether([
+            Paragraph("Monthly Shutdown Trend", styles["Heading2"]),
+            Spacer(1, 10),
+            Image(trend_img, width=6.8 * inch, height=3 * inch)
+        ])
+    )
 
 
     elements.append(
-    KeepTogether([
-        Paragraph("Downtime by Shutdown Reason", styles["Heading2"]),
-        Spacer(1, 10),
-        Image(reason_img, width=5.5 * inch, height=3 * inch)
-    ])
-)
+        KeepTogether([
+            Paragraph("Downtime by Shutdown Reason", styles["Heading2"]),
+            Spacer(1, 10),
+            Image(reason_img, width=5.5 * inch, height=3 * inch)
+        ])
+    )
 
     # ===== EVENT TABLE =====
     elements.append(Spacer(1, 25))
@@ -390,6 +398,10 @@ if st.button("🧾 Generate PDF Report"):
         "ShutdownReason",
         "Alert"
     ]]
+    
+    # Convert timestamps to string to avoid ReportLab issues
+    table_df["Shutdown Date/Time"] = table_df["Shutdown Date/Time"].astype(str)
+    table_df["Start Up Date/Time"] = table_df["Start Up Date/Time"].astype(str)
 
     table_data = [table_df.columns.tolist()] + table_df.values.tolist()
 
