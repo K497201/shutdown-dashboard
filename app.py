@@ -13,6 +13,7 @@ import plotly.io as pio
 import tempfile
 import os
 
+# Configure Kaleido for image export
 pio.kaleido.scope.default_format = "png"
 pio.kaleido.scope.default_width = 800
 pio.kaleido.scope.default_height = 400
@@ -63,7 +64,22 @@ st.caption("Operational downtime intelligence & reliability monitoring")
 def load_data(file):
     # 1. Read the file
     df = pd.read_excel(file, engine="openpyxl")
+
+    # Clean column names
     df.columns = df.columns.str.strip()
+
+    # -----------------------------
+    # REMOVE UNWANTED COLUMNS
+    # Excel: C, E, I → AB
+    # Python index: 2, 4, 8 → 27
+    # -----------------------------
+    cols_to_drop = list(range(8, 28))  # I → AB
+    cols_to_drop.extend([2, 4])        # C and E
+
+    # Drop only if they exist (safe)
+    df = df.drop(df.columns[cols_to_drop], axis=1, errors="ignore")
+
+    # --- CRITICAL FIX: Removed 'return df' here so processing continues ---
 
     # 2. Process Dates and Numerics
     df["Shutdown Date/Time"] = pd.to_datetime(df["Shutdown Date/Time"], errors="coerce")
