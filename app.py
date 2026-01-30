@@ -13,6 +13,11 @@ import plotly.io as pio
 import tempfile
 import os
 
+pio.kaleido.scope.default_format = "png"
+pio.kaleido.scope.default_width = 800
+pio.kaleido.scope.default_height = 400
+
+
 # =================================================
 # PAGE CONFIG
 # =================================================
@@ -315,8 +320,9 @@ if st.button("🧾 Generate PDF Report"):
     reason_img = os.path.join(tmp_dir, "reason.png")
 
     try:
-        pio.write_image(fig_monthly, trend_img, width=800, height=400)
-        pio.write_image(fig_reason, reason_img, width=600, height=400)
+        pio.write_image(fig_monthly, trend_img, engine="kaleido")
+        pio.write_image(fig_reason, reason_img, engine="kaleido")
+
     except ValueError:
         st.error("Kaleido package is required for PDF image generation. Please install it or check your environment.")
         st.stop()
